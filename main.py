@@ -29,12 +29,13 @@ def sparse_reconstruction(color_files):
     if not os.path.exists(database_path):
         feature_extraction_options = pycolmap.FeatureExtractionOptions()
         feature_extraction_options.num_threads = 8
-        feature_extraction_options.max_image_size = 1600
+        feature_extraction_options.max_image_size = 3000
         feature_extraction_options.use_gpu = False
 
         sift_options = pycolmap.SiftExtractionOptions()
-        sift_options.max_num_features = 4000
-        sift_options.first_octave = 0
+        sift_options.first_octave = -1
+
+        feature_extraction_options.sift = sift_options
 
         pycolmap.extract_features(database_path, image_dir, device=pycolmap.Device.cpu, extraction_options=feature_extraction_options)
     else:
@@ -173,7 +174,6 @@ def main():
         meshes.append(filled_mesh)
 
     o3d.visualization.draw_geometries(meshes, window_name="Reconstructed Meshes")
-
 
 if __name__ == "__main__":
     main()
