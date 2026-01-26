@@ -29,11 +29,11 @@ def sparse_reconstruction(color_files):
     if not os.path.exists(database_path):
         feature_extraction_options = pycolmap.FeatureExtractionOptions()
         feature_extraction_options.num_threads = 8
-        feature_extraction_options.max_image_size = 3000
+        feature_extraction_options.max_image_size = 2000
         feature_extraction_options.use_gpu = False
 
         sift_options = pycolmap.SiftExtractionOptions()
-        sift_options.first_octave = -1
+        sift_options.first_octave = 0
 
         feature_extraction_options.sift = sift_options
 
