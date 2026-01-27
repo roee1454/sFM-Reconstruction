@@ -2,3 +2,4 @@ open3d
 numpy
 pycolmap
 pycolmap-cuda
+opencv-python

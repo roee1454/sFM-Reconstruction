@@ -3,6 +3,7 @@ import os
 import numpy as np
 import shutil
 import open3d as o3d
+import subprocess
 
 def load_rgbd_images(color_file, depth_file):
     color_raw = o3d.io.read_image(color_file)
@@ -13,15 +14,15 @@ def load_rgbd_images(color_file, depth_file):
     
     return rgbd_image
 
-def sparse_reconstruction(color_files):
-    database_path = "test/result/database.db"
-    image_dir = "test/result/images_temp"
-    output_path = "test/result/sparse"
+def sparse_reconstruction(color_files, result_path):
+    database_path = os.path.join(result_path, "database.db")
+    image_dir = os.path.join(result_path, "images_temp")
+    output_path = os.path.join(result_path, "sparse")
 
     os.makedirs(image_dir, exist_ok=True)
 
     for i, color_file in enumerate(color_files):
-        image_name = f"image{i+1}.png"
+        image_name = f"image{i+1}.jpg"
         image_path = os.path.join(image_dir, image_name)
         shutil.copyfile(color_file, image_path)
 
@@ -37,7 +38,7 @@ def sparse_reconstruction(color_files):
 
         feature_extraction_options.sift = sift_options
 
-        pycolmap.extract_features(database_path, image_dir, device=pycolmap.Device.cpu, extraction_options=feature_extraction_options)
+        pycolmap.extract_features(database_path, image_dir, device=pycolmap.Device.cpu, extraction_options=feature_extraction_options, camera_model="PINHOLE")
     else:
         print("Database file already exists. Skipping feature extraction.")
 
@@ -108,72 +109,146 @@ def surface_reconstruction(point_cloud):
     mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(point_cloud, depth=10)
     return mesh
 
-def refine_mesh(mesh):
-    mesh = mesh.filter_smooth_laplacian(number_of_iterations=1)
-    mesh = mesh.filter_smooth_taubin(number_of_iterations=1)
+def run_command(cmd, cwd=None):
+    """Executes a system command and prints its output."""
+    print(f"Executing: {' '.join(cmd)}")
+    try:
+        process = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        for line in process.stdout:
+            print(line, end='')
+        process.wait()
+        if process.returncode != 0:
+            print(f"Command failed with exit code {process.returncode}")
+            return False
+        return True
+    except Exception as e:
+        print(f"Error executing command: {e}")
+        return False
+
+def convert_colmap_to_txt(sparse_model_path):
+    """Converts COLMAP binary model to TXT format expected by OpenMVS."""
+    # OpenMVS InterfaceCOLMAP expects a folder containing a 'sparse' subfolder with TXT files
+    txt_output_dir = os.path.join(sparse_model_path, "sparse")
+    os.makedirs(txt_output_dir, exist_ok=True)
     
-    # # Remove degenerate triangles
-    # mesh.remove_degenerate_triangles()
+    print(f"\n--- Converting COLMAP model to TXT at {txt_output_dir} ---")
+    cmd = [
+        "colmap", "model_converter",
+        "--input_path", sparse_model_path,
+        "--output_path", txt_output_dir,
+        "--output_type", "TXT"
+    ]
+    return run_command(cmd)
+
+def run_openmvs_pipeline(sparse_model_path, image_dir, output_dir):
+    mvs_bin = f"{os.path.dirname(os.path.abspath(__file__))}/thirdparty/OpenMVS/bin"
     
-    # # Remove duplicated vertices
-    # mesh.remove_duplicated_vertices()
+    print("\n--- Step 1: InterfaceCOLMAP ---")
+    abs_sparse_model_path = os.path.abspath(sparse_model_path)
+    abs_image_dir = os.path.abspath(image_dir)
+
+    print("Absolute image path:", abs_image_dir)
+    cmd = [
+        os.path.join(mvs_bin, "InterfaceCOLMAP"),
+        "-i", abs_sparse_model_path,
+        "-o", "scene.mvs",
+        "--image-folder", abs_image_dir
+    ]
+    if not run_command(cmd, cwd=output_dir): return False
     
-    # # Remove non-manifold edges
-    # mesh.remove_non_manifold_edges()
-    return mesh
+    print("\n--- Step 2: DensifyPointCloud ---")
+    cmd = [
+        os.path.join(mvs_bin, "DensifyPointCloud"),
+        "scene.mvs",
+        "-o", "scene_dense.mvs",
+        "--resolution-level", "2",
+    ]
+    if not run_command(cmd, cwd=output_dir): return False
+    
+    print("\n--- Step 3: ReconstructMesh ---")
+    cmd = [
+        os.path.join(mvs_bin, "ReconstructMesh"),
+        "scene_dense.mvs",
+        "-o", "scene_dense_mesh.mvs"
+    ]
+    if not run_command(cmd, cwd=output_dir): return False
+    
+    print("\n--- Step 4: RefineMesh ---")
+    cmd = [
+        os.path.join(mvs_bin, "RefineMesh"),
+        "--resolution-level", "1",
+        "scene_dense_mesh.mvs",
+        "-o", "scene_dense_mesh_refine.mvs"
+    ]
+    if not run_command(cmd, cwd=output_dir): return False
+    
+    print("\n--- Step 5: TextureMesh ---")
+    
+    cmd = [
+        os.path.join(mvs_bin, "TextureMesh"),
+        "--export-type", "obj",
+        "scene_dense_mesh_refine.mvs",
+        "-o", "result.obj"
+    ]
+    if not run_command(cmd, cwd=output_dir): return False
+    
+    print(f"\nReconstruction complete! Result saved to: {os.path.join(output_dir, 'result.obj')}")
+    return True
 
 def main():
     print(f"Using pycolmap version: {pycolmap.__version__}")
-
     dataset_path = "test/images"
+    result_path = "test/result"
     color_files = sorted([os.path.join(dataset_path, f) for f in os.listdir(dataset_path) if f.lower().endswith((".jpg", ".png", ".jpeg"))])
 
     if not color_files:
         print(f"No images found in {dataset_path}")
         return
     
-    sparse_dir = "test/result/sparse"
+    sparse_dir = os.path.join(result_path, "sparse")
 
     if not os.path.exists(sparse_dir) or not os.listdir(sparse_dir):
         print("Estimating Camera Pose")
-        sparse_model = sparse_reconstruction(color_files)
+        sparse_model = sparse_reconstruction(color_files, result_path)
+        sparse_model_path = os.path.join(sparse_dir, "0")
     else:
         print("Sparse reconstruction already exists. Loading...")
         sparse_model_path = os.path.join(sparse_dir, "0")
         if not os.path.exists(sparse_model_path):
             sparse_model_path = sparse_dir
-        
         try:
             sparse_model = pycolmap.Reconstruction(sparse_model_path)
         except Exception as e:
             print(f"Failed to load existing reconstruction: {e}")
             print("Re-running reconstruction...")
-            sparse_model = sparse_reconstruction(color_files)
+            sparse_model = sparse_reconstruction(color_files, result_path)
+            sparse_model_path = os.path.join(sparse_dir, "0")
     
     if sparse_model is None:
         print("Could not obtain a sparse reconstruction. Exiting.")
         return
     
-    print("Extracting Point Cloud from Sparse Model")
-    point_cloud = get_point_cloud_from_sparse_model(sparse_model)
+    image_dir = os.path.join(result_path, "images_temp")
+    
+    if not convert_colmap_to_txt(sparse_model_path):
+        print("Failed to convert COLMAP model to TXT.")
+        return
 
-    print("Filtering Outliers")
-    filtered_pcd = filter_outliers(point_cloud)
-    o3d.visualization.draw_geometries([filtered_pcd], window_name="Filtered Point Cloud")
-
-    print("Segmenting Point Cloud")
-    segments = segment_point_cloud(filtered_pcd)
-
-    print(f"Number of segments: {len(segments)}")
-
-    meshes = []
-    for i, segment in enumerate(segments):
-        print(f"Reconstructing Segment {i+1}")
-        mesh = surface_reconstruction(segment)
-        filled_mesh = refine_mesh(mesh)
-        meshes.append(filled_mesh)
-
-    o3d.visualization.draw_geometries(meshes, window_name="Reconstructed Meshes")
+    print("\n--- Starting OpenMVS Dense Reconstruction ---")
+    success = run_openmvs_pipeline(sparse_model_path, image_dir, result_path)
+    
+    if success:
+        print("Pipeline finished successfully.")
+    else:
+        print("Pipeline failed during OpenMVS steps.")
 
 if __name__ == "__main__":
     main()
