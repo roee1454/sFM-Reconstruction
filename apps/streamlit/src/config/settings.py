@@ -1,0 +1,29 @@
+"""
+Global settings and configuration for the reconstruction pipeline.
+"""
+
+import os
+import pycolmap
+
+# ============================================================================
+# QUALITY PROFILE CONFIGURATION
+# ============================================================================
+# Change this to switch between reconstruction profiles
+# Options: "SPEED", "BALANCED", or "QUALITY"
+QUALITY_PROFILE = "SPEED"
+# ============================================================================
+
+# Path to OpenMVS binaries (relative to project root)
+OPENMVS_BIN_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "thirdparty",
+    "openMVS",
+    "make",
+    "bin"
+)
+
+COLMAP_DEVICE=pycolmap.Device.cpu
+
+# Default paths
+DEFAULT_DATASET_PATH = "test/images"
+DEFAULT_RESULT_PATH = "test/result"
